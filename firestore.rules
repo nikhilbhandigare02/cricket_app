@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isAdmin() { return signedIn() && me().role == 'admin'; }
+    // An owner acting on their own records (users/{uid}.ownerId links login -> owner).
+    function isOwnerOf(ownerId) {
+      return signedIn() && me().role == 'owner' && me().ownerId == ownerId;
+    }
+    // True when a write changes only the listed fields.
+    function onlyChanges(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, delete: if isAdmin();
+      // Owners may change their own display name, never their role or owner link.
+      allow update: if isAdmin() || (request.auth.uid == uid && onlyChanges(['name']));
+    }
+
+    // Everyone signed in can read league data. Admin can change everything;
+    // an owner can edit only their own details, team and players.
+    match /owners/{id} {
+      allow read: if signedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isOwnerOf(id) && onlyChanges(['name', 'phone']));
+    }
+
+    // One team per owner: a new team's id must equal its ownerId.
+    match /teams/{id} {
+      allow read: if signedIn();
+      allow create: if isAdmin() && request.resource.data.ownerId == id;
+      allow update: if isAdmin() ||
+        (isOwnerOf(resource.data.ownerId) && onlyChanges(['name', 'ownerName', 'logo']));
+      allow delete: if isAdmin();
+    }
+    match /teams/{id}/players/{pid} {
+      allow read: if signedIn();
+      // Only the admin adds players; an owner can edit or remove their own.
+      allow create: if isAdmin();
+      allow update, delete: if isAdmin() ||
+        isOwnerOf(get(/databases/$(database)/documents/teams/$(id)).data.ownerId);
+    }
+
+    match /bracket/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /matches/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+      match /innings/{teamId} { allow read: if signedIn(); allow write: if isAdmin(); }
+    }
+  }
+}

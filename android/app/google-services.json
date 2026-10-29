@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "547798147437",
+    "firebase_url": "https://loginfunctionality-d175c-default-rtdb.firebaseio.com",
+    "project_id": "loginfunctionality-d175c",
+    "storage_bucket": "loginfunctionality-d175c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:547798147437:android:89adedfcfe4ec210d7ba64",
+        "android_client_info": {
+          "package_name": "com.village.village_league"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCdbTtnv2JM8sQuZia8hkhJ_zpROR29YQ4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
