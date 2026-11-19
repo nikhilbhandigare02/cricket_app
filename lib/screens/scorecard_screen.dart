@@ -325,7 +325,7 @@ class _ScorecardScreenState extends State<ScorecardScreen> {
   Widget _batSummary(int i, BatRow r) {
     final out = r.isOut;
     final how = out
-        ? '${r.how}${r.bowlerName.isNotEmpty ? ' b ${r.bowlerName}' : ''}'
+        ? r.dismissalText
         : 'not out';
     return Card(
       child: ListTile(
@@ -543,12 +543,21 @@ class _ScorecardScreenState extends State<ScorecardScreen> {
                   r.bowlerId = '';
                   r.bowlerName = '';
                 }
+                if (r.how != 'Run out') {
+                  r.fielderId = '';
+                  r.fielderName = '';
+                }
               }),
             ),
             if (r.creditsBowler)
               _playerDropdown('Bowler', bowlers, r.bowlerId, (p) {
                 r.bowlerId = p.id;
                 r.bowlerName = p.name;
+              }),
+            if (r.how == 'Run out')
+              _playerDropdown('Run out by (fielder)', bowlers, r.fielderId, (p) {
+                r.fielderId = p.id;
+                r.fielderName = p.name;
               }),
           ],
         ),

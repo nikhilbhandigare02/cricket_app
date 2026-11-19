@@ -10,6 +10,16 @@ final _timeFmt = DateFormat('hh:mm a');
 String fmtDate(DateTime d) => _dateFmt.format(d);
 String fmtTime(DateTime d) => _timeFmt.format(d);
 
+/// A match day runs from 5 PM to 5 PM, so a 12:55 AM match belongs to the
+/// evening before it.
+DateTime matchDay(DateTime d) {
+  final s = d.subtract(const Duration(hours: 17));
+  return DateTime(s.year, s.month, s.day);
+}
+
+/// [fmtDate] of the match day, for showing a match's date.
+String fmtMatchDate(DateTime d) => _dateFmt.format(matchDay(d));
+
 /// Centered icon + message for lists with nothing in them yet.
 class EmptyState extends StatelessWidget {
   final IconData icon;
@@ -95,7 +105,7 @@ class MatchTile extends StatelessWidget {
               Icon(Icons.event, size: 16, color: color),
               const SizedBox(width: 6),
               Expanded(
-                child: Text('${fmtDate(match.dateTime)}  •  ${fmtTime(match.dateTime)}',
+                child: Text('${match.stageLabel == null ? '' : '${match.stageLabel}  •  '}${fmtMatchDate(match.dateTime)}  •  ${fmtTime(match.dateTime)}',
                     style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 13)),
               ),
               Container(
@@ -174,7 +184,7 @@ class MatchList extends StatefulWidget {
 class _MatchListState extends State<MatchList> {
   DateTime? _day; // null = all dates
 
-  static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+  static DateTime _dateOnly(DateTime d) => matchDay(d);
 
   Future<void> _pickDay(DateTime initial) async {
     final d = await showDatePicker(
@@ -183,7 +193,7 @@ class _MatchListState extends State<MatchList> {
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
     );
-    if (d != null) setState(() => _day = _dateOnly(d));
+    if (d != null) setState(() => _day = DateTime(d.year, d.month, d.day));
   }
 
   @override

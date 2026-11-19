@@ -78,7 +78,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     const FadeSlideIn(
                       index: 2,
                       child: Text(
-                        'APL League',
+                        'League Manager',
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 30,

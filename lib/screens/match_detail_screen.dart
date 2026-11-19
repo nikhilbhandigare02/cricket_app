@@ -218,7 +218,7 @@ class _MatchDetailScreenState extends State<MatchDetailScreen> {
             team(m.teamBId, m.teamBName, m.scoreB),
           ]),
           const SizedBox(height: 10),
-          Text('${fmtDate(m.dateTime)}  •  ${fmtTime(m.dateTime)}${m.venue.isEmpty ? '' : '  •  ${m.venue}'}',
+          Text('${fmtMatchDate(m.dateTime)}  •  ${fmtTime(m.dateTime)}${m.venue.isEmpty ? '' : '  •  ${m.venue}'}',
               textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 12)),
         ]),
       ),
@@ -253,7 +253,7 @@ class _MatchDetailScreenState extends State<MatchDetailScreen> {
               _row(
                 [b.name, '${b.runs}'],
                 firstFlex: 4,
-                sub: b.isOut ? '${b.how}${b.bowlerName.isEmpty ? '' : ' b ${b.bowlerName}'}' : 'not out',
+                sub: b.isOut ? b.dismissalText : 'not out',
                 subColor: b.isOut ? Colors.red.shade700 : Colors.green.shade700,
                 boldIndexes: const {1},
               ),

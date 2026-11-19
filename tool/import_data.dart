@@ -6,6 +6,11 @@
 //   dart tool/import_data.dart            asks for your admin password (hidden)
 //   dart tool/import_data.dart --clean    first deletes the existing owners, teams,
 //                                         players, matches, scorecards and bracket
+//   dart tool/import_data.dart --matches-only  only (re)writes the matches, using the teams
+//                                         already in Firebase (matched by team name);
+//                                         owners, logins, teams and players are untouched
+//   dart tool/import_data.dart --matches-only --clean-matches  also deletes the existing
+//                                         matches, scorecards and bracket first
 //   dart tool/import_data.dart --dry-run  only checks the file, no network
 //
 // Optional environment variables: SEED_ADMIN_EMAIL (default admin@gmail.com),
@@ -117,6 +122,8 @@ Never fail(String msg) {
 Future<void> main(List<String> args) async {
   final dry = args.contains('--dry-run');
   final clean = args.contains('--clean');
+  final matchesOnly = args.contains('--matches-only');
+  final cleanMatches = args.contains('--clean-matches');
 
   // ---- load and check the data file
   final dataFile = File('tool/apl2026.json');
@@ -134,7 +141,7 @@ Future<void> main(List<String> args) async {
   final logos = <String, String>{};
   for (final t in teams) {
     final path = t['logo'] as String?;
-    if (path == null || path.isEmpty) continue;
+    if (matchesOnly || path == null || path.isEmpty) continue;
     final f = File(path);
     if (!f.existsSync()) fail('Logo file not found for ${t['name']}: $path');
     if (f.lengthSync() > 300 * 1024) fail('Logo for ${t['name']} is over 300 KB: $path');
@@ -166,7 +173,12 @@ Future<void> main(List<String> args) async {
 
   stdout.writeln('\nFirebase project: $projectId');
   if (clean) stdout.writeln('--clean: ALL existing owners, teams, players, matches, scorecards and the bracket will be deleted first.');
-  stdout.writeln('Owner logins are created with password "$ownerPassword" (existing ones are reused).');
+  if (matchesOnly) {
+    stdout.writeln('--matches-only: writes ${matches.length} matches for the teams already in Firebase.');
+    if (cleanMatches) stdout.writeln('--clean-matches: ALL existing matches, scorecards and the bracket will be deleted first.');
+  } else {
+    stdout.writeln('Owner logins are created with password "$ownerPassword" (existing ones are reused).');
+  }
   if (env['SEED_YES'] != '1') {
     stdout.write('Type "yes" to continue: ');
     if ((stdin.readLineSync() ?? '').trim().toLowerCase() != 'yes') {
@@ -217,9 +229,39 @@ Future<void> main(List<String> args) async {
       await commitAll(base, token, del.writes, 'Deleted');
     }
 
+    // ---- matches only: replace old matches, then look the teams up by name
+    final existingTeamIds = <String, String>{};
+    if (matchesOnly) {
+      if (cleanMatches) {
+        final del = Writer(base);
+        for (final m in await listDocs(base, token, 'matches')) {
+          final id = (m['name'] as String).split('/').last;
+          for (final i in await listDocs(base, token, 'matches/$id/innings')) {
+            del.delete(i['name'] as String);
+          }
+          del.delete(m['name'] as String);
+        }
+        for (final d in await listDocs(base, token, 'bracket')) {
+          del.delete(d['name'] as String);
+        }
+        await commitAll(base, token, del.writes, 'Deleted');
+      }
+      for (final t in await listDocs(base, token, 'teams')) {
+        final name = (t['fields']?['name']?['stringValue'] ?? '') as String;
+        existingTeamIds[name.trim().toLowerCase()] = (t['name'] as String).split('/').last;
+      }
+      final missing = [
+        for (final t in teams)
+          if (!existingTeamIds.containsKey((t['name'] as String).trim().toLowerCase())) t['name'],
+      ];
+      if (missing.isNotEmpty) {
+        fail('These teams are not in Firebase yet (add them, or run without --matches-only): $missing');
+      }
+    }
+
     // ---- owner logins (create, or reuse if they already exist)
     final uids = <String, String>{};
-    for (final t in teams) {
+    for (final t in matchesOnly ? const <Map<String, dynamic>>[] : teams) {
       final email = t['email'] as String;
       try {
         final r = await call('POST', '$auth:signUp?key=$apiKey',
@@ -248,6 +290,11 @@ Future<void> main(List<String> args) async {
       final ownerId = 'apl-owner-$key'; // team id == owner id (one team per owner)
       teamId[key] = ownerId;
       teamName[key] = t['name'] as String;
+      if (matchesOnly) {
+        // Keep the teams as they are in Firebase; only point the matches at them.
+        teamId[key] = existingTeamIds[(t['name'] as String).trim().toLowerCase()]!;
+        continue;
+      }
       w.set('owners/$ownerId', {
         'name': t['ownerName'],
         'email': t['email'],
@@ -289,6 +336,56 @@ Future<void> main(List<String> args) async {
         'winnerId': null,
       });
     }
+    // Playoffs: four matches (IPL format) right after the last league match, one
+    // every 25 minutes, with no teams yet. The app fills the teams in from the
+    // points table when the league ends. Same slot ids as the app's own bracket.
+    var last = DateTime.parse('${matches.first[0]} ${matches.first[1]}:00');
+    for (final m in matches) {
+      final t = DateTime.parse('${m[0]} ${m[1]}:00');
+      if (t.isAfter(last)) last = t;
+    }
+    const playoffs = [
+      ('r0m0', 0, 0, 1, 2, 'Table #1', 'Table #2'),
+      ('r0m1', 0, 1, 3, 4, 'Table #3', 'Table #4'),
+      ('r1m0', 1, 0, null, null, 'Loser of Qualifier 1', 'Winner of Eliminator'),
+      ('r2m0', 2, 0, null, null, 'Winner of Qualifier 1', 'Winner of Qualifier 2'),
+    ];
+    for (var k = 0; k < playoffs.length; k++) {
+      final (slot, round, index, seedA, seedB, nameA, nameB) = playoffs[k];
+      final when = last.add(Duration(minutes: 25 * (k + 1)));
+      final matchId = 'apl-match-${(matches.length + k + 1).toString().padLeft(2, '0')}';
+      w.set('matches/$matchId', {
+        'bracketSlot': slot,
+        'teamAId': '',
+        'teamAName': nameA,
+        'teamBId': '',
+        'teamBName': nameB,
+        'dateTime': when,
+        'venue': venue,
+        'completed': false,
+        'scoreA': 0,
+        'scoreB': 0,
+        'winnerId': null,
+      });
+      w.set('bracket/$slot', {
+        'round': round,
+        'index': index,
+        'teamAId': null,
+        'teamAName': null,
+        'teamBId': null,
+        'teamBName': null,
+        'winnerId': null,
+        'winnerName': null,
+        'matchId': matchId,
+        'matchTime': when,
+        'scoreText': null,
+        'tableSeeded': true,
+        'format': 'ipl',
+        'teamCount': 4,
+        'seedA': seedA,
+        'seedB': seedB,
+      });
+    }
     await commitAll(base, token, w.writes, 'Written');
   } on ApiError catch (e) {
     stderr.writeln('\nFirestore request failed: $e');
@@ -296,6 +393,10 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
+  if (matchesOnly) {
+    stdout.writeln('\nDone: ${matches.length} matches written.');
+    return;
+  }
   stdout.writeln('\nDone: ${teams.length} owners and teams, ${matches.length} matches.');
   stdout.writeln('Admin login:  $adminEmail (your password)');
   stdout.writeln('Owner logins: ${teams.first['email']} ... ${teams.last['email']}  password "$ownerPassword"');

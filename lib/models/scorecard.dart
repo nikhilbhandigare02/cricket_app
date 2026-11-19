@@ -25,6 +25,8 @@ class BatRow {
   String how;
   String bowlerId;
   String bowlerName;
+  String fielderId; // who took the run out
+  String fielderName;
 
   BatRow({
     this.playerId = '',
@@ -36,7 +38,13 @@ class BatRow {
     this.how = 'Not out',
     this.bowlerId = '',
     this.bowlerName = '',
+    this.fielderId = '',
+    this.fielderName = '',
   });
+
+  /// "Caught b Ali", "Run out (Sam)", ...
+  String get dismissalText =>
+      '$how${bowlerName.isNotEmpty ? ' b $bowlerName' : ''}${how == 'Run out' && fielderName.isNotEmpty ? ' ($fielderName)' : ''}';
 
   bool get isOut => how != 'Not out';
 
@@ -55,6 +63,8 @@ class BatRow {
         'how': how,
         'bowlerId': bowlerId,
         'bowlerName': bowlerName,
+        'fielderId': fielderId,
+        'fielderName': fielderName,
       };
 
   factory BatRow.fromMap(Map<String, dynamic> m) => BatRow(
@@ -67,6 +77,8 @@ class BatRow {
         how: m['how'] ?? 'Not out',
         bowlerId: m['bowlerId'] ?? '',
         bowlerName: m['bowlerName'] ?? '',
+        fielderId: m['fielderId'] ?? '',
+        fielderName: m['fielderName'] ?? '',
       );
 }
 

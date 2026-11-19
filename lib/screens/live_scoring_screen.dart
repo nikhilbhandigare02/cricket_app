@@ -301,6 +301,47 @@ class _LiveScoringScreenState extends State<LiveScoringScreen> {
     return pick;
   }
 
+  /// Replace the striker or non-striker (e.g. picked by mistake). The new batter
+  /// can be anyone in the batting team who is not out and not at the other end.
+  Future<void> _changeBatter(bool striker) async {
+    final current = striker ? _striker : _nonStriker;
+    final other = striker ? _nonStriker : _striker;
+    final out = {for (final b in _cur.bat) if (b.isOut) b.playerId};
+    final list = [for (final p in _roster[_battingId]!) if (!out.contains(p.id) && p.id != other) p];
+    var pick = current;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: Text(striker ? 'Change striker' : 'Change non-striker'),
+          content: _picker(striker ? 'Striker' : 'Non-striker', list, pick, const {}, (v) => setS(() => pick = v)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(onPressed: pick.isEmpty ? null : () => Navigator.pop(ctx, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || pick == current) return;
+    _push();
+    setState(() {
+      final old = _batRow(current);
+      // Drop the old batter's row if he has not faced anything yet.
+      if (old != null && old.runs == 0 && old.balls == 0 && old.fours == 0 && old.sixes == 0 && !old.isOut) {
+        _cur.bat.remove(old);
+      }
+      if (_batRow(pick) == null) {
+        final p = _player(_battingId, pick);
+        _cur.bat.add(BatRow(playerId: p.id, name: p.name));
+      }
+      if (striker) {
+        _striker = pick;
+      } else {
+        _nonStriker = pick;
+      }
+    });
+  }
+
   // ------------------------------------------------------------ scoring
 
   void _push() {
@@ -407,6 +448,7 @@ class _LiveScoringScreenState extends State<LiveScoringScreen> {
     var how = types.first;
     var strikerOut = true;
     var completed = 0;
+    var fielder = ''; // who took the run out (fielding team)
     final sName = _batRow(_striker)!.name;
     final nName = _batRow(_nonStriker)!.name;
 
@@ -431,9 +473,11 @@ class _LiveScoringScreenState extends State<LiveScoringScreen> {
           const SizedBox(height: 14),
           const Text('Runs completed first'),
           Wrap(spacing: 8, children: [
-            for (final r in [0, 1, 2])
+            for (final r in [0, 1, 2, 3])
               ChoiceChip(label: Text('$r'), selected: completed == r, onSelected: (_) => setS(() => completed = r)),
           ]),
+          const SizedBox(height: 14),
+          _picker('Run out by (fielder)', _roster[_fieldingId]!, fielder, const {}, (v) => setS(() => fielder = v)),
         ],
       ]),
     );
@@ -453,6 +497,10 @@ class _LiveScoringScreenState extends State<LiveScoringScreen> {
       } else {
         s.runs += completed;
         b.runs += completed;
+        if (fielder.isNotEmpty) {
+          outRow.fielderId = fielder;
+          outRow.fielderName = _player(_fieldingId, fielder).name;
+        }
       }
       if (legal) {
         b.balls++;
@@ -462,6 +510,10 @@ class _LiveScoringScreenState extends State<LiveScoringScreen> {
         _noBall = false;
       }
     });
+
+    // An odd number of completed runs means the batters had crossed before the
+    // run out, so they are at each other's end when the wicket falls.
+    if (how == 'Run out' && completed.isOdd) setState(_swap);
 
     // A new batter always comes straight in, at the end of the one who was out.
     if (!_cur.allOut) {
@@ -633,7 +685,14 @@ class _LiveScoringScreenState extends State<LiveScoringScreen> {
         title: Text('${r?.name ?? '-'}${onStrike ? ' *' : ''}',
             style: TextStyle(fontWeight: onStrike ? FontWeight.bold : FontWeight.normal)),
         subtitle: Text(onStrike ? 'On strike' : 'Non-striker'),
-        trailing: Text('${r?.runs ?? 0}', style: Theme.of(context).textTheme.titleLarge),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('${r?.runs ?? 0}', style: Theme.of(context).textTheme.titleLarge),
+          IconButton(
+            tooltip: onStrike ? 'Change striker' : 'Change non-striker',
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            onPressed: _started ? () => _changeBatter(onStrike) : null,
+          ),
+        ]),
       );
     }
 

@@ -110,14 +110,14 @@ class AnimatedValueText extends StatelessWidget {
 }
 
 /// Full-screen loading: the logo gently breathing.
-class AplLoader extends StatefulWidget {
-  const AplLoader({super.key});
+class LeagueLoader extends StatefulWidget {
+  const LeagueLoader({super.key});
 
   @override
-  State<AplLoader> createState() => _AplLoaderState();
+  State<LeagueLoader> createState() => _LeagueLoaderState();
 }
 
-class _AplLoaderState extends State<AplLoader> with SingleTickerProviderStateMixin {
+class _LeagueLoaderState extends State<LeagueLoader> with SingleTickerProviderStateMixin {
   late final AnimationController _c =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))..repeat(reverse: true);
 

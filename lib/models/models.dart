@@ -150,6 +150,20 @@ class MatchGame {
 
   bool involves(String teamId) => teamAId == teamId || teamBId == teamId;
 
+  /// Names of the IPL playoff slots, shown on their match cards.
+  static const slotNames = {
+    'r0m0': 'Qualifier 1',
+    'r0m1': 'Eliminator',
+    'r1m0': 'Qualifier 2',
+    'r2m0': 'Final',
+  };
+
+  /// "Qualifier 1", "Final", ... for a playoff match, null for a league match.
+  String? get stageLabel => slotNames[bracketSlot];
+
+  /// False for a playoff match whose teams are not decided yet.
+  bool get teamsKnown => teamAId.isNotEmpty && teamBId.isNotEmpty;
+
   /// Win / Loss / Draw / Upcoming from the point of view of [teamId].
   String statusFor(String teamId) {
     if (!completed) return 'Upcoming';
@@ -173,6 +187,9 @@ class BracketSlot {
   final String? winnerName;
   final String? matchId;
   final String? scoreText;
+  final int? seedA; // league-table position feeding side A (table-seeded round 0)
+  final int? seedB;
+  final DateTime? matchTime; // when the slot's match is scheduled (copy of the match date)
 
   BracketSlot({
     required this.id,
@@ -186,6 +203,9 @@ class BracketSlot {
     this.winnerName,
     this.matchId,
     this.scoreText,
+    this.seedA,
+    this.seedB,
+    this.matchTime,
   });
 
   bool get ready => teamAId != null && teamBId != null;
@@ -204,6 +224,9 @@ class BracketSlot {
       winnerName: m['winnerName'],
       matchId: m['matchId'],
       scoreText: m['scoreText'],
+      seedA: m['seedA'],
+      seedB: m['seedB'],
+      matchTime: (m['matchTime'] as Timestamp?)?.toDate(),
     );
   }
 }

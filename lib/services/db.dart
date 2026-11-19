@@ -1,13 +1,15 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+﻿import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../models/models.dart';
 import '../models/scorecard.dart';
+import '../models/standings.dart';
 import 'team_logos.dart';
 
 class Db {
   static final _fs = FirebaseFirestore.instance;
   static final _auth = FirebaseAuth.instance;
+
 
   static CollectionReference<Map<String, dynamic>> get owners => _fs.collection('owners');
   static CollectionReference<Map<String, dynamic>> get teams => _fs.collection('teams');
@@ -15,8 +17,7 @@ class Db {
   static CollectionReference<Map<String, dynamic>> get users => _fs.collection('users');
 
   // ---------- auth / profile ----------
-  static Future<void> signIn(String email, String password) =>
-      _auth.signInWithEmailAndPassword(email: email.trim(), password: password);
+  static Future<void> signIn(String email, String password) => _auth.signInWithEmailAndPassword(email: email.trim(), password: password);
 
   static Future<void> signOut() async {
     TeamLogos.reset();
@@ -42,7 +43,7 @@ class Db {
     required String phone,
     required String password,
     required String teamName,
-    required List<Map<String, dynamic>> players,
+    required List players,
     String? logo, // base64 JPEG from TeamLogos.pick()
   }) async {
     final secondary = await Firebase.initializeApp(
@@ -172,11 +173,20 @@ class Db {
   static Future<void> deleteMatch(String id) async {
     final slot = (await matches.doc(id).get()).data()?['bracketSlot'] as String?;
     await matches.doc(id).delete();
-    if (slot != null) await _applySlotResult(slot, unlink: true);
+    if (slot != null) {
+      await _applySlotResult(slot, unlink: true);
+    } else {
+      await refreshBracket();
+    }
   }
 
-  static Future<void> updateSchedule(String id, DateTime when, String venue) =>
-      matches.doc(id).update({'dateTime': Timestamp.fromDate(when), 'venue': venue});
+  static Future<void> updateSchedule(String id, DateTime when, String venue) async {
+    final ref = matches.doc(id);
+    await ref.update({'dateTime': Timestamp.fromDate(when), 'venue': venue});
+    // A knockout match also shows its date on the bracket slot.
+    final slot = (await ref.get()).data()?['bracketSlot'] as String?;
+    if (slot != null) await bracket.doc(slot).update({'matchTime': Timestamp.fromDate(when)});
+  }
 
   static Future<void> saveResult(MatchGame m, int scoreA, int scoreB) async {
     await matches.doc(m.id).update({
@@ -186,6 +196,7 @@ class Db {
       'winnerId': scoreA == scoreB ? null : (scoreA > scoreB ? m.teamAId : m.teamBId),
     });
     await syncBracket(m.id);
+    await refreshBracket();
   }
 
   // ---------- scorecard ----------
@@ -262,11 +273,13 @@ class Db {
     });
     await batch.commit();
     await syncBracket(m.id);
+    await refreshBracket();
   }
 
   static Future<void> reopenMatch(String id) async {
     await matches.doc(id).update({'completed': false, 'scoreA': 0, 'scoreB': 0, 'winnerId': null});
     await syncBracket(id);
+    await refreshBracket();
   }
 
   // ---------- tournament bracket ----------
@@ -283,66 +296,262 @@ class Db {
     return d.exists ? MatchGame.fromDoc(d) : null;
   }
 
-  /// Standard seeding order so top seeds only meet late: size 8 => 1,8,4,5,2,7,3,6.
-  static List<int> _seedOrder(int size) {
-    var order = [1];
-    while (order.length < size) {
-      final n = order.length * 2;
-      order = [for (final s in order) ...[s, n + 1 - s]];
-    }
-    return order;
-  }
+  /// IPL playoff format, four slots (ids `r{round}m{index}`):
+  ///   r0m0 Qualifier 1  : table #1 v #2 - winner to the Final, loser to Qualifier 2
+  ///   r0m1 Eliminator   : table #3 v #4 - winner to Qualifier 2, loser is out
+  ///   r1m0 Qualifier 2  : loser of Q1 v winner of the Eliminator - winner to the Final
+  ///   r2m0 Final        : winner of Q1 v winner of Q2
+  static const _iplFormat = 'ipl';
 
-  /// Replaces the bracket with a single-elimination one for [seeded] (in seed
-  /// order). A team without an opponent gets a bye and advances automatically.
-  static Future<void> createBracket(List<Team> seeded) async {
-    var size = 2;
-    while (size < seeded.length) {
-      size *= 2;
-    }
-    Team? seedTeam(int seed) => seed <= seeded.length ? seeded[seed - 1] : null;
-    final order = _seedOrder(size);
-    final rounds = <List<Map<String, Team?>>>[
-      [
-        for (var i = 0; i < size ~/ 2; i++)
-          {'teamA': seedTeam(order[i * 2]), 'teamB': seedTeam(order[i * 2 + 1]), 'winner': null}
-      ],
-    ];
-    for (var n = size ~/ 4; n >= 1; n ~/= 2) {
-      rounds.add([for (var i = 0; i < n; i++) {'teamA': null, 'teamB': null, 'winner': null}]);
-    }
-    // Resolve byes in round 0 and push those teams into round 1.
-    for (var i = 0; i < rounds[0].length; i++) {
-      final s = rounds[0][i];
-      final a = s['teamA'];
-      final b = s['teamB'];
-      if ((a == null) != (b == null) && rounds.length > 1) {
-        final w = a ?? b;
-        s['winner'] = w;
-        rounds[1][i ~/ 2][i.isEven ? 'teamA' : 'teamB'] = w;
-      }
-    }
-    final old = await bracket.get();
+  /// Where the result of [slot] sends its teams: (target slot id, side, winner?).
+  static List<(String, String, bool)> _iplRoutes(String slot) => switch (slot) {
+        'r0m0' => [('r2m0', 'teamA', true), ('r1m0', 'teamA', false)],
+        'r0m1' => [('r1m0', 'teamB', true)],
+        'r1m0' => [('r2m0', 'teamB', true)],
+        _ => const [],
+      };
+
+  /// Creates the empty playoff bracket whose first two matches take the top four
+  /// of the league table. [refreshBracket] fills in the teams and schedules the
+  /// matches once the league is complete.
+  static Future<void> _writeTableBracket() async {
     final batch = _fs.batch();
-    for (final d in old.docs) {
+    for (final d in (await bracket.get()).docs) {
       batch.delete(d.reference);
     }
-    for (var r = 0; r < rounds.length; r++) {
-      for (var i = 0; i < rounds[r].length; i++) {
-        final s = rounds[r][i];
-        batch.set(bracket.doc('r${r}m$i'), {
-          'round': r,
-          'index': i,
-          'teamAId': s['teamA']?.id,
-          'teamAName': s['teamA']?.name,
-          'teamBId': s['teamB']?.id,
-          'teamBName': s['teamB']?.name,
-          'winnerId': s['winner']?.id,
-          'winnerName': s['winner']?.name,
-          'matchId': null,
-          'scoreText': null,
-        });
+    const layout = [
+      (0, 0, 1, 2),
+      (0, 1, 3, 4),
+      (1, 0, null, null),
+      (2, 0, null, null),
+    ];
+    for (final (r, i, seedA, seedB) in layout) {
+      batch.set(bracket.doc('r${r}m$i'), {
+        'round': r,
+        'index': i,
+        'teamAId': null,
+        'teamAName': null,
+        'teamBId': null,
+        'teamBName': null,
+        'winnerId': null,
+        'winnerName': null,
+        'matchId': null,
+        'matchTime': null,
+        'scoreText': null,
+        'tableSeeded': true,
+        'format': _iplFormat,
+        'teamCount': 4,
+        'seedA': ?seedA,
+        'seedB': ?seedB,
+      });
+    }
+    await batch.commit();
+  }
+
+  /// Keeps a table-seeded bracket in step with the league. When there is no
+  /// bracket yet and there are league matches (between at least four teams), the
+  /// IPL playoff bracket is created. Once the league is complete, the top four of
+  /// the points table (points, then net run rate) fill Qualifier 1 and the
+  /// Eliminator; then every slot with both teams known gets its match scheduled
+  /// automatically. If the league changes again before any playoff match is
+  /// played, the bracket is cleared and re-seeded, unless the admin edited it by
+  /// hand ([updateBracketSlot]). A bracket in the old quarter/semi format is
+  /// replaced by the playoff one while none of its matches is completed.
+  static Future<void> refreshBracket() async {
+    final all = (await matches.get()).docs.map(MatchGame.fromDoc).toList();
+    final league = all.where((m) => m.bracketSlot == null).toList();
+    final knockout = all.where((m) => m.bracketSlot != null).toList();
+    final leagueDone = league.isNotEmpty && league.every((m) => m.completed);
+
+    var slotDocs = (await bracket.get()).docs;
+    final oldFormat = slotDocs.isNotEmpty &&
+        slotDocs.any((d) => d.data()['format'] != _iplFormat) &&
+        !knockout.any((m) => m.completed);
+    if (slotDocs.isEmpty || oldFormat) {
+      // The bracket appears as soon as there are league matches; its teams fill
+      // in from the points table when the league is complete.
+      if (league.isEmpty) return;
+      final teamIds = {for (final m in league) ...[m.teamAId, m.teamBId]};
+      if (teamIds.length < 4) return;
+      if (oldFormat) {
+        final refs = <DocumentReference>[];
+        for (final m in knockout) {
+          for (final i in (await matches.doc(m.id).collection('innings').get()).docs) {
+            refs.add(i.reference);
+          }
+          refs.add(matches.doc(m.id));
+        }
+        await _deleteAll(refs);
+        knockout.clear();
       }
+      await _writeTableBracket();
+      slotDocs = (await bracket.get()).docs;
+    }
+    slotDocs = slotDocs.where((d) => d.data()['tableSeeded'] == true).toList();
+    if (slotDocs.isEmpty) return;
+
+    final edited = slotDocs.any((d) => d.data()['manual'] == true);
+    if (!edited && !knockout.any((m) => m.completed)) {
+      const teamCount = 4;
+      // Seed position (1-based) -> team, only once the table is final.
+      final seeds = <int, Team>{};
+      if (leagueDone) {
+        final innings = <String, Map<String, Innings>>{
+          for (final m in league)
+            m.id: {
+              m.teamAId: await loadInnings(m.id, m.teamAId),
+              m.teamBId: await loadInnings(m.id, m.teamBId),
+            },
+        };
+        final table = computeStandings(league, innings: innings);
+        for (var i = 0; i < table.length && i < teamCount; i++) {
+          seeds[i + 1] = Team(id: table[i].id, name: table[i].name, ownerId: '', ownerName: '');
+        }
+      }
+      await _reseed(slotDocs, seeds, knockout);
+    }
+    await _scheduleReadySlots();
+  }
+
+  /// Bracket wording shown on a playoff match until its team is known.
+  static String _placeholder(String slot, String side) {
+    const names = {
+      'r0m0': ('Table #1', 'Table #2'),
+      'r0m1': ('Table #3', 'Table #4'),
+      'r1m0': ('Loser of Qualifier 1', 'Winner of Eliminator'),
+      'r2m0': ('Winner of Qualifier 1', 'Winner of Qualifier 2'),
+    };
+    final n = names[slot];
+    return n == null ? '' : (side == 'teamA' ? n.$1 : n.$2);
+  }
+
+  static Future<void> _reseed(List<QueryDocumentSnapshot<Map<String, dynamic>>> slotDocs,
+      Map<int, Team> seeds, List<MatchGame> knockout) async {
+    final round0 = slotDocs.where((d) => d.data()['round'] == 0).toList();
+    final unchanged = round0.every((d) {
+      final m = d.data();
+      return m['teamAId'] == seeds[m['seedA']]?.id && m['teamBId'] == seeds[m['seedB']]?.id;
+    });
+    if (unchanged) return;
+
+    final batch = _fs.batch();
+    // Wipe every slot. Scheduled playoff matches (none is played yet) stay, so
+    // their dates stay too: they are only reset and get the new teams below.
+    for (final d in slotDocs) {
+      batch.update(d.reference, {
+        'teamAId': null,
+        'teamAName': null,
+        'teamBId': null,
+        'teamBName': null,
+        'winnerId': null,
+        'winnerName': null,
+        'scoreText': null,
+      });
+    }
+    final seeded = {for (final d in round0) d.id: d.data()};
+    for (final d in round0) {
+      final m = d.data();
+      final a = seeds[m['seedA']], b = seeds[m['seedB']];
+      batch.update(d.reference, {
+        'teamAId': a?.id,
+        'teamAName': a?.name,
+        'teamBId': b?.id,
+        'teamBName': b?.name,
+      });
+    }
+    for (final m in knockout) {
+      for (final i in (await matches.doc(m.id).collection('innings').get()).docs) {
+        batch.delete(i.reference);
+      }
+      final slot = m.bracketSlot!;
+      final seed = seeded[slot];
+      final a = seed == null ? null : seeds[seed['seedA']];
+      final b = seed == null ? null : seeds[seed['seedB']];
+      batch.update(matches.doc(m.id), {
+        'teamAId': a?.id ?? '',
+        'teamAName': a?.name ?? _placeholder(slot, 'teamA'),
+        'teamBId': b?.id ?? '',
+        'teamBName': b?.name ?? _placeholder(slot, 'teamB'),
+        'completed': false,
+        'scoreA': 0,
+        'scoreB': 0,
+        'winnerId': null,
+        'live': false,
+      });
+    }
+    await batch.commit();
+  }
+
+  /// Admin edit of one bracket slot: change its two teams and the date/venue of
+  /// its match (created if it has none). Marks the bracket as hand-edited so it
+  /// is no longer re-seeded from the table until [resetBracketToTable].
+  static Future<void> updateBracketSlot(
+    BracketSlot s, {
+    required Team a,
+    required Team b,
+    required DateTime when,
+    required String venue,
+  }) async {
+    final batch = _fs.batch();
+    final slotUpdate = {
+      'teamAId': a.id,
+      'teamAName': a.name,
+      'teamBId': b.id,
+      'teamBName': b.name,
+      'manual': true,
+    };
+    if (s.matchId != null) {
+      batch.update(matches.doc(s.matchId), {
+        'teamAId': a.id,
+        'teamAName': a.name,
+        'teamBId': b.id,
+        'teamBName': b.name,
+        'dateTime': Timestamp.fromDate(when),
+        'venue': venue,
+      });
+      batch.update(bracket.doc(s.id), {...slotUpdate, 'matchTime': Timestamp.fromDate(when)});
+    } else {
+      final ref = matches.doc();
+      batch.set(ref, _matchData(a, b, when, venue, bracketSlot: s.id));
+      batch.update(bracket.doc(s.id), {...slotUpdate, 'matchId': ref.id, 'matchTime': Timestamp.fromDate(when)});
+    }
+    await batch.commit();
+  }
+
+  /// Drops the admin's manual edits and re-seeds the bracket from the table.
+  static Future<void> resetBracketToTable() async {
+    final batch = _fs.batch();
+    for (final d in (await bracket.get()).docs) {
+      batch.update(d.reference, {'manual': FieldValue.delete()});
+    }
+    await batch.commit();
+    await refreshBracket();
+  }
+
+  /// Creates the match for every table-seeded slot that has both teams but no
+  /// match yet: in 25 minute slots right after the latest scheduled match.
+  static Future<void> _scheduleReadySlots() async {
+    final slots = (await bracket.get()).docs.where((d) => d.data()['tableSeeded'] == true).map(BracketSlot.fromDoc).toList()
+      ..sort((a, b) => a.round != b.round ? a.round.compareTo(b.round) : a.index.compareTo(b.index));
+    final todo = slots.where((s) => s.ready && s.winnerId == null && s.matchId == null).toList();
+    if (todo.isEmpty) return;
+    final all = (await matches.get()).docs.map(MatchGame.fromDoc).toList()
+      ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+    // Same rhythm as the league: one match every 25 minutes,
+    // straight after the last scheduled match.
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    var base = DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 17, 0);
+    if (all.isNotEmpty) base = all.last.dateTime.add(const Duration(minutes: 25));
+    final venue = all.isEmpty ? '' : all.last.venue;
+    final batch = _fs.batch();
+    for (var k = 0; k < todo.length; k++) {
+      final s = todo[k];
+      final a = Team(id: s.teamAId!, name: s.teamAName ?? '', ownerId: '', ownerName: '');
+      final b = Team(id: s.teamBId!, name: s.teamBName ?? '', ownerId: '', ownerName: '');
+      final when = base.add(Duration(minutes: k * 25));
+      final ref = matches.doc();
+      batch.set(ref, _matchData(a, b, when, venue, bracketSlot: s.id));
+      batch.update(bracket.doc(s.id), {'matchId': ref.id, 'matchTime': Timestamp.fromDate(when)});
     }
     await batch.commit();
   }
@@ -379,29 +588,38 @@ class Db {
     final ref = matches.doc();
     final batch = _fs.batch();
     batch.set(ref, _matchData(a, b, when, venue, bracketSlot: s.id));
-    batch.update(bracket.doc(s.id), {'matchId': ref.id});
+    batch.update(bracket.doc(s.id), {'matchId': ref.id, 'matchTime': Timestamp.fromDate(when)});
     await batch.commit();
   }
 
   /// Mirrors a match result into the bracket: a decided, completed match moves
-  /// its winner on to the next round; anything else (draw, reopened, upcoming)
-  /// takes that winner out again.
+  /// its winner (and in Qualifier 1 its loser) on; anything else (draw,
+  /// reopened, upcoming) takes them out again.
   static Future<void> syncBracket(String matchId) async {
     final d = (await matches.doc(matchId).get()).data();
     final slot = d?['bracketSlot'] as String?;
     if (d == null || slot == null) return;
     final winnerId = d['winnerId'] as String?;
     if (d['completed'] == true && winnerId != null) {
-      final name = winnerId == d['teamAId'] ? d['teamAName'] : d['teamBName'];
+      final aWon = winnerId == d['teamAId'];
       await _applySlotResult(slot,
-          winnerId: winnerId, winnerName: name, scoreText: '${d['scoreA']} - ${d['scoreB']}');
+          winnerId: winnerId,
+          winnerName: aWon ? d['teamAName'] : d['teamBName'],
+          loserId: aWon ? d['teamBId'] : d['teamAId'],
+          loserName: aWon ? d['teamBName'] : d['teamAName'],
+          scoreText: '${d['scoreA']} - ${d['scoreB']}');
     } else {
       await _applySlotResult(slot);
     }
   }
 
   static Future<void> _applySlotResult(String slotId,
-      {String? winnerId, String? winnerName, String? scoreText, bool unlink = false}) async {
+      {String? winnerId,
+      String? winnerName,
+      String? loserId,
+      String? loserName,
+      String? scoreText,
+      bool unlink = false}) async {
     final ref = bracket.doc(slotId);
     final snap = await ref.get();
     if (!snap.exists) return;
@@ -413,17 +631,23 @@ class Db {
       'scoreText': scoreText,
       if (unlink) 'matchId': null,
     });
-    final nextRef = bracket.doc('r${s.round + 1}m${s.index ~/ 2}');
-    final nextSnap = await nextRef.get();
-    if (nextSnap.exists) {
-      final side = s.index.isEven ? 'teamA' : 'teamB';
-      batch.update(nextRef, {'${side}Id': winnerId, '${side}Name': winnerName});
+    final isIpl = snap.data()?['format'] == _iplFormat;
+    final routes = isIpl
+        ? _iplRoutes(slotId)
+        : [('r${s.round + 1}m${s.index ~/ 2}', s.index.isEven ? 'teamA' : 'teamB', true)];
+    for (final (targetId, side, winnerGoes) in routes) {
+      final nextRef = bracket.doc(targetId);
+      final nextSnap = await nextRef.get();
+      if (!nextSnap.exists) continue;
+      final id = winnerGoes ? winnerId : loserId;
+      final name = winnerGoes ? winnerName : loserName;
+      batch.update(nextRef, {'${side}Id': id, '${side}Name': name});
       // Keep a not-yet-played next-round match in step with the new team.
       final nextMatchId = BracketSlot.fromDoc(nextSnap).matchId;
       if (nextMatchId != null) {
         final nm = await matches.doc(nextMatchId).get();
         if (nm.exists && nm.data()!['completed'] != true) {
-          batch.update(nm.reference, {'${side}Id': winnerId ?? '', '${side}Name': winnerName ?? ''});
+          batch.update(nm.reference, {'${side}Id': id ?? '', '${side}Name': name ?? _placeholder(targetId, side)});
         }
       }
     }
@@ -462,6 +686,7 @@ class Db {
       }
     }
     await batch.commit();
+    await refreshBracket();
     return pairs.length;
   }
 }

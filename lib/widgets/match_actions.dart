@@ -15,6 +15,7 @@ Future<void> showMatchActions(BuildContext context, MatchGame m) async {
     builder: (sheet) => SafeArea(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         ListTile(title: Text('${m.teamAName} vs ${m.teamBName}', style: const TextStyle(fontWeight: FontWeight.bold))),
+        if (m.teamsKnown) ...[
         ListTile(
           leading: const Icon(Icons.play_circle_fill),
           title: const Text('Live scoring (ball by ball)'),
@@ -64,6 +65,7 @@ Future<void> showMatchActions(BuildContext context, MatchGame m) async {
               if (ok) await Db.reopenMatch(m.id);
             },
           ),
+        ],
         ListTile(
           leading: const Icon(Icons.edit_calendar),
           title: const Text('Change date / time / venue'),

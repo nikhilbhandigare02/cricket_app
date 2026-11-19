@@ -7,6 +7,7 @@ import '../widgets/owner_edit.dart';
 import '../widgets/team_avatar.dart';
 import 'bracket_screen.dart';
 import 'match_detail_screen.dart';
+import 'player_stats_screen.dart';
 import 'team_detail.dart';
 
 /// Read-only view for an owner: own team(s), upcoming matches and results.
@@ -21,6 +22,7 @@ class OwnerHome extends StatefulWidget {
 
 class _OwnerHomeState extends State<OwnerHome> {
   int _tab = 0;
+  bool _allMatches = false; // false = only my team's matches, true = every match
   late String _name = widget.ownerName;
 
   @override
@@ -56,6 +58,7 @@ class _OwnerHomeState extends State<OwnerHome> {
                       _matches(teams, ids, completed: false),
                       _matches(teams, ids, completed: true),
                       const BracketView(canEdit: false),
+                      PlayerStatsView(myTeamIds: ids),
                     ]),
                   ),
                 ]),
@@ -67,6 +70,7 @@ class _OwnerHomeState extends State<OwnerHome> {
               NavigationDestination(icon: Icon(Icons.event), label: 'Matches'),
               NavigationDestination(icon: Icon(Icons.emoji_events), label: 'Results'),
               NavigationDestination(icon: Icon(Icons.account_tree), label: 'Bracket'),
+              NavigationDestination(icon: Icon(Icons.bar_chart), label: 'Players'),
             ],
           ),
         );
@@ -108,25 +112,47 @@ class _OwnerHomeState extends State<OwnerHome> {
       builder: (context, snap) {
         if (!snap.hasData) return const Center(child: CircularProgressIndicator());
         final list = snap.data!
-            .where((m) => m.completed == completed && (ids.contains(m.teamAId) || ids.contains(m.teamBId)))
+            .where((m) =>
+                m.completed == completed &&
+                (_allMatches || ids.contains(m.teamAId) || ids.contains(m.teamBId)))
             .toList();
         final shown = completed ? list.reversed.toList() : list;
-        return MatchList(
-          matches: shown,
-          // For a single-team owner show Win/Loss for that team.
-          myTeamId: teams.length == 1 ? teams.first.id : null,
-          onTap: (m) => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => MatchDetailScreen(
-                match: m,
-                myTeamId: ids.contains(m.teamAId) ? m.teamAId : m.teamBId,
-              ),
+        return Column(children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(value: false, label: Text('My team'), icon: Icon(Icons.person)),
+                ButtonSegment(value: true, label: Text('All matches'), icon: Icon(Icons.groups)),
+              ],
+              selected: {_allMatches},
+              onSelectionChanged: (v) => setState(() => _allMatches = v.first),
             ),
           ),
-          countLabel: completed ? 'Completed matches' : 'Upcoming matches',
-          emptyText: completed ? 'No completed matches' : 'No upcoming matches',
-        );
+          Expanded(
+            child: MatchList(
+              matches: shown,
+              // For a single-team owner show Win/Loss for that team (own matches only).
+              myTeamId: !_allMatches && teams.length == 1 ? teams.first.id : null,
+              onTap: (m) => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => MatchDetailScreen(
+                    match: m,
+                    myTeamId: ids.contains(m.teamAId)
+                        ? m.teamAId
+                        : (ids.contains(m.teamBId) ? m.teamBId : null),
+                  ),
+                ),
+              ),
+              countLabel: completed
+                  ? (_allMatches ? 'All completed matches' : 'Completed matches')
+                  : (_allMatches ? 'All upcoming matches' : 'Upcoming matches'),
+              emptyText: completed ? 'No completed matches' : 'No upcoming matches',
+            ),
+          ),
+        ]);
       },
     );
   }

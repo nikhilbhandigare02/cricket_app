@@ -1,26 +1,27 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
+import '../models/scorecard.dart';
+import '../models/standings.dart';
 import '../services/db.dart';
 import '../widgets/form_widgets.dart';
 import '../widgets/match_actions.dart';
 import '../widgets/match_widgets.dart';
 
-/// Knockout bracket. Admin ([canEdit]) can schedule each pairing's match and
+/// Knockout bracket, built automatically from the points table. Admin ([canEdit])
+/// can edit each slot (teams, date, venue) and
 /// open its scorecard; winners move to the next round automatically when a
 /// score is saved. Owners get a read-only view.
 class BracketView extends StatelessWidget {
   final bool canEdit;
   const BracketView({super.key, required this.canEdit});
 
-  static String roundName(int round, int totalRounds) {
-    final fromEnd = totalRounds - 1 - round;
-    return switch (fromEnd) {
-      0 => 'Final',
-      1 => 'Semi-finals',
-      2 => 'Quarter-finals',
-      _ => 'Round ${round + 1}',
-    };
-  }
+  /// Column headings of the IPL playoff layout.
+  static String roundName(int round) => switch (round) {
+        0 => 'Top 4 of the table',
+        1 => 'Qualifier 2',
+        2 => 'Final',
+        _ => 'Round ${round + 1}',
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -31,16 +32,18 @@ class BracketView extends StatelessWidget {
         if (!snap.hasData) return const Center(child: CircularProgressIndicator());
         final slots = snap.data!;
         if (slots.isEmpty) {
-          return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            EmptyState(
-                icon: Icons.account_tree,
-                text: canEdit
-                    ? 'No bracket yet.\nTap "Create bracket".'
-                    : 'The admin has not created a bracket yet.'),
-            if (canEdit) const _DeleteTournamentButton(),
-          ]);
+          return SingleChildScrollView(
+            child: Column(children: [
+              const _Standings(),
+              // Admin opening this screen builds the bracket from the league matches.
+              if (canEdit) const _AutoCreate(),
+              const EmptyState(
+                  icon: Icons.account_tree,
+                  text: 'The IPL-style playoffs (Qualifier 1, Eliminator, Qualifier 2, Final) are created from the points table '
+                      'once league matches are scheduled.'),
+            ]),
+          );
         }
-        final totalRounds = slots.last.round + 1;
         final finalSlot = slots.last;
         return Column(children: [
           if (finalSlot.winnerName != null)
@@ -58,29 +61,12 @@ class BracketView extends StatelessWidget {
           Expanded(
             child: SingleChildScrollView(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                if (canEdit) const _DeleteTournamentButton(),
+                if (canEdit) const _AutoCreate(),
+                if (canEdit) const _ReseedButton(),
                 const _Standings(),
-                SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.all(12),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  for (var r = 0; r < totalRounds; r++)
-                    SizedBox(
-                      width: 230,
-                      child: Column(children: [
-                        Text(roundName(r, totalRounds),
-                            style: Theme.of(context).textTheme.titleMedium),
-                        const SizedBox(height: 8),
-                        for (final s in slots.where((s) => s.round == r))
-                          Padding(
-                            // Space later rounds out so they sit between their feeders.
-                            padding: EdgeInsets.symmetric(vertical: 6 + 70.0 * ((1 << r) - 1)),
-                            child: _SlotCard(slot: s, canEdit: canEdit),
-                          ),
-                      ]),
-                    ),
-                ]),
-              ),
+                _PlayoffFlow(slots: slots, canEdit: canEdit),
+                const _Standings(playoffTeams: true),
+                const SizedBox(height: 12),
               ]),
             ),
           ),
@@ -90,10 +76,65 @@ class BracketView extends StatelessWidget {
   }
 }
 
+/// IPL playoffs laid out top to bottom: Qualifier 1 and the Eliminator side by
+/// side, then Qualifier 2, then the Final, with arrows showing who goes where.
+class _PlayoffFlow extends StatelessWidget {
+  final List<BracketSlot> slots;
+  final bool canEdit;
+  const _PlayoffFlow({required this.slots, required this.canEdit});
+
+  BracketSlot? _slot(String id) => slots.where((s) => s.id == id).firstOrNull;
+
+  Widget _card(String id) {
+    final s = _slot(id);
+    return s == null ? const SizedBox.shrink() : _SlotCard(slot: s, canEdit: canEdit);
+  }
+
+  Widget _arrow(BuildContext context, String text) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(children: [
+          const Icon(Icons.arrow_downward, size: 20, color: Colors.grey),
+          Text(text, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(children: [
+        Text('Playoffs', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(child: _card('r0m0')),
+          const SizedBox(width: 8),
+          Expanded(child: _card('r0m1')),
+        ]),
+        _arrow(context, 'Loser of Qualifier 1 and winner of Eliminator'),
+        Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 320), child: _card('r1m0'))),
+        _arrow(context, 'Winners of Qualifier 1 and Qualifier 2'),
+        Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 320), child: _card('r2m0'))),
+      ]),
+    );
+  }
+}
+
 class _SlotCard extends StatelessWidget {
   final BracketSlot slot;
   final bool canEdit;
   const _SlotCard({required this.slot, required this.canEdit});
+
+  /// Title, what feeds each side, and where the teams go next (IPL playoffs).
+  static (String, String, String, String) _info(BracketSlot s) => switch (s.id) {
+        'r0m0' => ('Qualifier 1', 'Table #1', 'Table #2',
+            'Winner to the Final, loser gets Qualifier 2'),
+        'r0m1' => ('Eliminator', 'Table #3', 'Table #4',
+            'Loser is out, winner plays Qualifier 2'),
+        'r1m0' => ('Qualifier 2', 'Loser of Qualifier 1', 'Winner of Eliminator',
+            'Winner goes to the Final'),
+        'r2m0' => ('Final', 'Winner of Qualifier 1', 'Winner of Qualifier 2', 'Champions'),
+        _ => ('Match ${s.round + 1}.${s.index + 1}', 'TBD', 'TBD', ''),
+      };
 
   Widget _team(String? id, String? name) {
     final isWinner = id != null && id == slot.winnerId;
@@ -123,9 +164,7 @@ class _SlotCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bye = slot.winnerId != null &&
-        slot.matchId == null &&
-        (slot.teamAId == null || slot.teamBId == null);
+    final (title, labelA, labelB, hint) = _info(slot);
     return Card(
       margin: EdgeInsets.zero,
       child: InkWell(
@@ -134,29 +173,48 @@ class _SlotCard extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(10),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            _team(slot.teamAId, slot.teamAName ?? (bye ? 'BYE' : null)),
+            Row(children: [
+              Expanded(
+                child: Text(title,
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelLarge
+                        ?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary)),
+              ),
+              if (canEdit && slot.winnerId == null)
+                InkWell(
+                  onTap: () => _editSlotDialog(context, slot),
+                  child: const Padding(
+                    padding: EdgeInsets.all(2),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.edit, size: 14),
+                      SizedBox(width: 4),
+                      Text('Edit', style: TextStyle(fontSize: 12)),
+                    ]),
+                  ),
+                ),
+            ]),
+            _team(slot.teamAId, slot.teamAName ?? labelA),
             const Divider(height: 8),
-            _team(slot.teamBId, slot.teamBName ?? (bye ? 'BYE' : null)),
+            _team(slot.teamBId, slot.teamBName ?? labelB),
             if (slot.scoreText != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text('Score: ${slot.scoreText}', style: Theme.of(context).textTheme.bodySmall),
               )
             else if (slot.matchId != null)
+              // Padding(
+              //   padding: const EdgeInsets.only(top: 4),
+              //   child: Text(
+              //     'Match scheduled${canEdit ? ' - tap to score' : ''}',
+              //     style: Theme.of(context).textTheme.bodySmall,
+              //   ),
+              // ),
+            if (hint.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  canEdit ? 'Match scheduled - tap to score' : 'Match scheduled',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              )
-            else if (canEdit && slot.ready && slot.winnerId == null)
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => _scheduleDialog(context, slot),
-                  child: const Text('Schedule match'),
-                ),
+                child: Text(hint,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
               ),
           ]),
         ),
@@ -165,73 +223,85 @@ class _SlotCard extends StatelessWidget {
   }
 }
 
-Future<void> _scheduleDialog(BuildContext context, BracketSlot slot) async {
-  var when = DateTime.now().add(const Duration(days: 1));
-  when = DateTime(when.year, when.month, when.day, 9, 0);
-  final venue = TextEditingController();
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (_) => StatefulBuilder(
-      builder: (ctx, setS) => AlertDialog(
-        title: Text('${slot.teamAName} vs ${slot.teamBName}'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          OutlinedButton.icon(
-            icon: const Icon(Icons.event),
-            label: Text('${fmtDate(when)}  ${fmtTime(when)}'),
-            onPressed: () async {
-              final d = await showDatePicker(
-                  context: ctx, initialDate: when, firstDate: DateTime(2020), lastDate: DateTime(2100));
-              if (d == null || !ctx.mounted) return;
-              final t = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(when));
-              if (t == null) return;
-              setS(() => when = DateTime(d.year, d.month, d.day, t.hour, t.minute));
-            },
+/// Admin: change the two teams of a bracket slot and the date/venue of its
+/// match. The bracket then stays as edited until "Re-seed from points table".
+Future<void> _editSlotDialog(BuildContext context, BracketSlot slot) async {
+  final teams = await Db.teamsStream().first;
+  final existing = slot.matchId == null ? null : await Db.matchById(slot.matchId!);
+  if (!context.mounted) return;
+  var when = existing?.dateTime ?? DateTime.now().add(const Duration(days: 1));
+  if (existing == null) when = DateTime(when.year, when.month, when.day, 9, 0);
+  final venue = TextEditingController(text: existing?.venue ?? '');
+  String? a = teams.any((t) => t.id == slot.teamAId) ? slot.teamAId : null;
+  String? b = teams.any((t) => t.id == slot.teamBId) ? slot.teamBId : null;
+  final ok = await showFormDialog(
+    context,
+    title: 'Edit match',
+    icon: Icons.edit,
+    builder: (ctx, setS) => Column(mainAxisSize: MainAxisSize.min, children: [
+      for (final side in [0, 1])
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: DropdownButtonFormField<String>(
+            initialValue: side == 0 ? a : b,
+            isExpanded: true,
+            decoration: InputDecoration(labelText: side == 0 ? 'Team A' : 'Team B'),
+            items: [for (final t in teams) DropdownMenuItem(value: t.id, child: Text(t.name))],
+            onChanged: (v) => setS(() => side == 0 ? a = v : b = v),
           ),
-          TextField(controller: venue, decoration: const InputDecoration(labelText: 'Venue')),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Schedule')),
-        ],
+        ),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.event),
+        label: Text('${fmtDate(when)}  ${fmtTime(when)}'),
+        onPressed: () async {
+          final d = await showDatePicker(
+              context: ctx, initialDate: when, firstDate: DateTime(2020), lastDate: DateTime(2100));
+          if (d == null || !ctx.mounted) return;
+          final t = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(when));
+          if (t == null) return;
+          setS(() => when = DateTime(d.year, d.month, d.day, t.hour, t.minute));
+        },
       ),
-    ),
+      formField(venue, 'Venue', Icons.place_outlined),
+    ]),
   );
-  if (ok == true) await Db.scheduleBracketMatch(slot, when, venue.text.trim());
+  if (ok != true) return;
+  if (a == null || b == null || a == b) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Pick two different teams')));
+    }
+    return;
+  }
+  await Db.updateBracketSlot(slot,
+      a: teams.firstWhere((t) => t.id == a),
+      b: teams.firstWhere((t) => t.id == b),
+      when: when,
+      venue: venue.text.trim());
 }
 
-/// Admin button: wipes the bracket and all matches so a fresh tournament can
-/// be created (where every team plays every other team again).
-class _DeleteTournamentButton extends StatelessWidget {
-  const _DeleteTournamentButton();
+/// Builds the bracket (and seeds/schedules it if the league is done) once shown.
+class _AutoCreate extends StatefulWidget {
+  const _AutoCreate();
 
-  Future<void> _delete(BuildContext context) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete bracket & league?'),
-        content: const Text(
-          'This deletes the bracket, ALL matches (league and knockout) and their '
-          'scorecards and results. Teams, players and owners are kept.\n\n'
-          'Then tap "Create bracket" to start a new tournament where every team '
-          'plays every other team.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    await Db.deleteTournament();
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Bracket and matches deleted. Create a new bracket.')));
-    }
+  @override
+  State<_AutoCreate> createState() => _AutoCreateState();
+}
+
+class _AutoCreateState extends State<_AutoCreate> {
+  @override
+  void initState() {
+    super.initState();
+    Db.refreshBracket();
   }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
+}
+
+/// Admin button: throws away manual edits and rebuilds the bracket from the table.
+class _ReseedButton extends StatelessWidget {
+  const _ReseedButton();
 
   @override
   Widget build(BuildContext context) {
@@ -240,72 +310,107 @@ class _DeleteTournamentButton extends StatelessWidget {
       child: Align(
         alignment: Alignment.centerRight,
         child: OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-          icon: const Icon(Icons.delete_outline),
-          label: const Text('Delete bracket & league'),
-          onPressed: () => _delete(context),
+          icon: const Icon(Icons.refresh),
+          label: const Text('Re-seed from points table'),
+          onPressed: () async {
+            await Db.resetBracketToTable();
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Bracket re-seeded from the points table')));
+            }
+          },
         ),
       ),
     );
   }
 }
 
-/// One row of the league table.
-class Standing {
-  final String id;
-  final String name;
-  int played = 0, won = 0, lost = 0, drawn = 0, points = 0, diff = 0;
-  Standing(this.id, this.name);
+/// League table shown above the bracket once round-robin matches exist.
+class _Standings extends StatefulWidget {
+  /// true: show the four teams that make the playoffs (top 4 of the table) instead of the full table.
+  final bool playoffTeams;
+  const _Standings({this.playoffTeams = false});
+
+  @override
+  State<_Standings> createState() => _StandingsState();
 }
 
-/// League table from the round-robin matches (those not part of the knockout
-/// bracket). A win is 2 points, a draw 1; ties are split by run difference.
-List<Standing> computeStandings(List<MatchGame> matches) {
-  final rows = <String, Standing>{};
-  Standing row(String id, String name) => rows.putIfAbsent(id, () => Standing(id, name));
-  for (final m in matches) {
-    if (m.bracketSlot != null) continue;
-    final a = row(m.teamAId, m.teamAName);
-    final b = row(m.teamBId, m.teamBName);
-    if (!m.completed) continue;
-    a.played++;
-    b.played++;
-    a.diff += m.scoreA - m.scoreB;
-    b.diff += m.scoreB - m.scoreA;
-    if (m.winnerId == null) {
-      a.drawn++;
-      b.drawn++;
-      a.points++;
-      b.points++;
-    } else if (m.winnerId == m.teamAId) {
-      a.won++;
-      b.lost++;
-      a.points += 2;
-    } else {
-      b.won++;
-      a.lost++;
-      b.points += 2;
+class _StandingsState extends State<_Standings> {
+  final _innings = <String, Map<String, Innings>>{};
+  final _loaded = <String, String>{};
+  final _loading = <String>{};
+
+  /// Loads the innings of completed league matches once, for the run rate.
+  Future<void> _load(List<MatchGame> matches) async {
+    for (final m in matches) {
+      if (!m.completed || m.bracketSlot != null) continue;
+      // Reload when the score changes (match rescored or reopened).
+      final key = '${m.id}:${m.scoreA}:${m.scoreB}';
+      if (_loaded[m.id] == key || !_loading.add(key)) continue;
+      final a = await Db.loadInnings(m.id, m.teamAId);
+      final b = await Db.loadInnings(m.id, m.teamBId);
+      _loaded[m.id] = key;
+      _innings[m.id] = {m.teamAId: a, m.teamBId: b};
+      if (mounted) setState(() {});
     }
   }
-  return rows.values.toList()
-    ..sort((x, y) {
-      if (x.points != y.points) return y.points.compareTo(x.points);
-      if (x.diff != y.diff) return y.diff.compareTo(x.diff);
-      return x.name.compareTo(y.name);
-    });
-}
 
-/// League table shown above the bracket once round-robin matches exist.
-class _Standings extends StatelessWidget {
-  const _Standings();
+  /// The top four of the table, picked automatically: a green Q once a team is
+  /// sure of its place, otherwise "Projected" while the league is still running.
+  Widget _playoffTeamsCard(BuildContext context, List<Standing> rows, Set<String> qualified, List<MatchGame> matches) {
+    final top = rows.take(4).toList();
+    final leagueDone = matches.where((m) => m.bracketSlot == null).isNotEmpty &&
+        matches.where((m) => m.bracketSlot == null).every((m) => m.completed);
+    const roles = ['Qualifier 1', 'Qualifier 1', 'Eliminator', 'Eliminator'];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.verified, color: Colors.green),
+            const SizedBox(width: 8),
+            Text(leagueDone ? 'Qualified for the playoffs' : 'Playoff teams (from the points table)',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ]),
+          const SizedBox(height: 4),
+          Text(leagueDone ? 'Top 4 teams of the final table.' : 'Updates automatically as matches finish.',
+              style: Theme.of(context).textTheme.bodySmall),
+          const Divider(height: 18),
+          if (top.isEmpty) const Text('No teams yet'),
+          for (var i = 0; i < top.length; i++)
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(radius: 14, child: Text('${i + 1}')),
+              title: Text(top[i].name, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('${top[i].points} pts  •  NRR ${top[i].nrr >= 0 ? '+' : ''}${top[i].nrr.toStringAsFixed(3)}  •  ${roles[i]}'),
+              trailing: qualified.contains(top[i].id)
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(color: Colors.green.shade600, borderRadius: BorderRadius.circular(6)),
+                      child: const Text('Q', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    )
+                  : const Text('Projected', style: TextStyle(color: Colors.grey)),
+            ),
+        ]),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<MatchGame>>(
+    return StreamBuilder<List<Team>>(
+      stream: Db.teamsStream(),
+      builder: (context, teamSnap) => StreamBuilder<List<MatchGame>>(
       stream: Db.matchesStream(),
       builder: (context, snap) {
-        final rows = computeStandings(snap.data ?? const []);
+        final matches = snap.data ?? const <MatchGame>[];
+        _load(matches);
+        // Every team is listed from the start, on 0, even before any match.
+        final rows = computeStandings(matches, innings: _innings, teams: teamSnap.data ?? const []);
         if (rows.isEmpty) return const SizedBox.shrink();
+        final qualified = qualifiedTeamIds(rows, matches);
+        if (widget.playoffTeams) return _playoffTeamsCard(context, rows, qualified, matches);
         Widget cell(String t, {int flex = 1, bool bold = false, TextAlign align = TextAlign.center}) => Expanded(
               flex: flex,
               child: Text(t,
@@ -319,7 +424,7 @@ class _Standings extends StatelessWidget {
             collapsedShape: const Border(),
             leading: const Icon(Icons.leaderboard),
             title: const Text('League table', style: TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: const Text('Every team plays every other team - win 2, draw 1'),
+            subtitle: const Text('Win 2, draw 1  •  Q = qualified for the playoffs'),
             childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             children: [
               Row(children: [
@@ -328,6 +433,7 @@ class _Standings extends StatelessWidget {
                 cell('W', bold: true),
                 cell('L', bold: true),
                 cell('D', bold: true),
+                cell('NRR', flex: 2, bold: true),
                 cell('Pts', bold: true),
               ]),
               const Divider(height: 12),
@@ -335,11 +441,26 @@ class _Standings extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Row(children: [
-                    cell('${i + 1}. ${rows[i].name}', flex: 4, align: TextAlign.left),
+                    Expanded(
+                      flex: 4,
+                      child: Row(children: [
+                        Flexible(child: Text('${i + 1}. ${rows[i].name}', overflow: TextOverflow.ellipsis)),
+                        if (qualified.contains(rows[i].id))
+                          Container(
+                            margin: const EdgeInsets.only(left: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                                color: Colors.green.shade600, borderRadius: BorderRadius.circular(4)),
+                            child: const Text('Q',
+                                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                          ),
+                      ]),
+                    ),
                     cell('${rows[i].played}'),
                     cell('${rows[i].won}'),
                     cell('${rows[i].lost}'),
                     cell('${rows[i].drawn}'),
+                    cell('${rows[i].nrr >= 0 ? '+' : ''}${rows[i].nrr.toStringAsFixed(3)}', flex: 2),
                     cell('${rows[i].points}', bold: true),
                   ]),
                 ),
@@ -347,146 +468,7 @@ class _Standings extends StatelessWidget {
           ),
         );
       },
+      ),
     );
-  }
-}
-
-/// Admin: pick the teams, whether every team should also play every other team
-/// (round-robin league), and how the knockout is seeded. Rebuilds the bracket.
-Future<void> createBracketDialog(BuildContext context) async {
-  final teams = await Db.teamsStream().first;
-  if (!context.mounted) return;
-  if (teams.length < 2) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Add at least 2 teams first')));
-    return;
-  }
-  final selected = {for (final t in teams) t.id};
-  var seeding = 'random';
-  var roundRobin = true;
-  var fresh = true;
-  var start = DateTime.now().add(const Duration(days: 1));
-  start = DateTime(start.year, start.month, start.day, 9, 0);
-  final perDay = TextEditingController(text: '2');
-  final slot = TextEditingController(text: '120');
-  final venue = TextEditingController();
-  const seedOptions = {
-    'random': 'Random draw',
-    'listed': 'Order listed below',
-    'table': 'League table',
-  };
-
-  final ok = await showFormDialog(
-    context,
-    title: 'Create tournament',
-    icon: Icons.account_tree,
-    confirmLabel: 'Create',
-    builder: (ctx, setS) => Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Start fresh'),
-          subtitle: const Text('Delete the old bracket and ALL existing matches first, '
-              'so every pair of teams gets a new match'),
-          value: fresh,
-          onChanged: (v) => setS(() => fresh = v),
-        ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Every team plays every other team'),
-          subtitle: const Text('Creates round-robin league matches for the picked teams'),
-          value: roundRobin,
-          onChanged: (v) => setS(() => roundRobin = v),
-        ),
-        if (roundRobin) ...[
-          OutlinedButton.icon(
-            icon: const Icon(Icons.event),
-            label: Text('Start: ${fmtDate(start)}  ${fmtTime(start)}'),
-            onPressed: () async {
-              final d = await showDatePicker(
-                  context: ctx, initialDate: start, firstDate: DateTime(2020), lastDate: DateTime(2100));
-              if (d == null || !ctx.mounted) return;
-              final t = await showTimePicker(context: ctx, initialTime: TimeOfDay.fromDateTime(start));
-              if (t == null) return;
-              setS(() => start = DateTime(d.year, d.month, d.day, t.hour, t.minute));
-            },
-          ),
-          const SizedBox(height: 12),
-          formField(perDay, 'Matches per day', Icons.today, type: TextInputType.number),
-          formField(slot, 'Minutes between matches', Icons.timer_outlined, type: TextInputType.number),
-          formField(venue, 'Venue', Icons.place_outlined),
-        ],
-        const Text('Knockout seeding'),
-        const SizedBox(height: 6),
-        Wrap(spacing: 8, children: [
-          for (final e in seedOptions.entries)
-            ChoiceChip(
-              label: Text(e.value),
-              selected: seeding == e.key,
-              onSelected: (_) => setS(() => seeding = e.key),
-            ),
-        ]),
-        const Divider(height: 24),
-        const Text('Teams'),
-        for (final t in teams)
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            title: Text(t.name),
-            value: selected.contains(t.id),
-            onChanged: (v) => setS(() => v == true ? selected.add(t.id) : selected.remove(t.id)),
-          ),
-      ],
-    ),
-  );
-  if (ok != true) return;
-  final picked = teams.where((t) => selected.contains(t.id)).toList();
-  if (picked.length < 2) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pick at least 2 teams')));
-    }
-    return;
-  }
-
-  final all = await Db.matchesStream().first;
-  if (fresh && all.isNotEmpty) {
-    if (!context.mounted) return;
-    final sure = await confirmDelete(
-      context,
-      title: 'Delete ${all.length} existing matches?',
-      message: '"Start fresh" deletes the old bracket and all ${all.length} matches, with their scores and '
-          'scorecards, before the new tournament is created.',
-      confirmLabel: 'Delete and create',
-    );
-    if (!sure) return;
-  }
-  // Seeding by table must read the results before a fresh start wipes them.
-  final standings = computeStandings(all);
-  final league = fresh ? <MatchGame>[] : all.where((m) => m.bracketSlot == null).toList();
-  if (fresh) await Db.deleteTournament();
-  if (seeding == 'table') {
-    final order = {for (final (i, s) in standings.indexed) s.id: i};
-    picked.sort((a, b) => (order[a.id] ?? 999).compareTo(order[b.id] ?? 999));
-  } else if (seeding == 'random') {
-    picked.shuffle();
-  }
-  await Db.createBracket(picked);
-  var created = 0;
-  if (roundRobin) {
-    created = await Db.generateRoundRobin(
-      allTeams: picked,
-      existing: league,
-      start: start,
-      matchesPerDay: (int.tryParse(perDay.text) ?? 2).clamp(1, 50),
-      slotMinutes: (int.tryParse(slot.text) ?? 120).clamp(15, 1440),
-      venue: venue.text.trim(),
-    );
-  }
-  if (context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(roundRobin
-            ? 'Bracket created and $created league matches scheduled'
-            : 'Bracket created')));
   }
 }

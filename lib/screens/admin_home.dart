@@ -11,6 +11,7 @@ import '../widgets/owner_edit.dart';
 import '../widgets/team_avatar.dart';
 import 'add_owner_screen.dart';
 import 'bracket_screen.dart';
+import 'player_stats_screen.dart';
 import 'team_detail.dart';
 
 class AdminHome extends StatefulWidget {
@@ -28,6 +29,7 @@ class _AdminHomeState extends State<AdminHome> {
     'Upcoming Matches',
     'Completed Matches',
     'Tournament Bracket',
+    'Player Stats',
   ];
 
   @override
@@ -46,6 +48,7 @@ class _AdminHomeState extends State<AdminHome> {
           _MatchesTab(completed: false),
           _MatchesTab(completed: true),
           BracketView(canEdit: true),
+          PlayerStatsView(),
         ],
       ),
       floatingActionButton: switch (_tab) {
@@ -58,11 +61,6 @@ class _AdminHomeState extends State<AdminHome> {
           onPressed: () => _scheduleSheet(context),
           icon: const Icon(Icons.add),
           label: const Text('Schedule'),
-        ),
-        3 => FloatingActionButton.extended(
-          onPressed: () => createBracketDialog(context),
-          icon: const Icon(Icons.account_tree),
-          label: const Text('Create bracket'),
         ),
         _ => null,
       },
@@ -80,6 +78,7 @@ class _AdminHomeState extends State<AdminHome> {
             icon: Icon(Icons.account_tree),
             label: 'Bracket',
           ),
+          NavigationDestination(icon: Icon(Icons.bar_chart), label: 'Players'),
         ],
       ),
     );
@@ -107,50 +106,72 @@ class _OwnersTab extends StatelessWidget {
             icon: Icons.groups,
           );
         }
-        return ListView.builder(
-          padding: const EdgeInsets.only(top: 6, bottom: 90),
-          itemCount: owners.length,
-          itemBuilder: (_, i) {
-            final o = owners[i];
-            return FadeSlideIn(
-              key: ValueKey(o.id),
-              index: i,
-              child: Card(
-                child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  leading: CircleAvatar(
-                    radius: 26,
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    child: Text(
-                      o.name.isEmpty ? '?' : o.name[0].toUpperCase(),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 20,
+        // One team per owner: shown as the avatar (logo) and under the email.
+        return StreamBuilder<List<Team>>(
+          stream: Db.teamsStream(),
+          builder: (context, teamSnap) {
+            final teamOf = {
+              for (final t in teamSnap.data ?? const <Team>[]) t.ownerId: t,
+            };
+            return ListView.builder(
+              padding: const EdgeInsets.only(top: 6, bottom: 90),
+              itemCount: owners.length,
+              itemBuilder: (_, i) {
+                final o = owners[i];
+                final team = teamOf[o.id];
+                return FadeSlideIn(
+                  key: ValueKey(o.id),
+                  index: i,
+                  child: Card(
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      leading: team != null
+                          ? TeamAvatar(
+                              teamId: team.id,
+                              name: team.name,
+                              radius: 26,
+                              background: Theme.of(context).colorScheme.primary,
+                              foreground: Colors.white,
+                            )
+                          : CircleAvatar(
+                              radius: 26,
+                              backgroundColor: Theme.of(context).colorScheme.primary,
+                              foregroundColor: Colors.white,
+                              child: Text(
+                                o.name.isEmpty ? '?' : o.name[0].toUpperCase(),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 20,
+                                ),
+                              ),
+                            ),
+                      title: Text(
+                        o.name,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text([
+                          o.email,
+                          if (team != null) team.name,
+                          if (o.phone.isNotEmpty) o.phone,
+                        ].join('\n')),
+                      ),
+                      isThreeLine: true,
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => OwnerDetailScreen(owner: o),
+                        ),
                       ),
                     ),
                   ),
-                  title: Text(
-                    o.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text('${o.email}\n${o.phone}'),
-                  ),
-                  isThreeLine: true,
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => OwnerDetailScreen(owner: o),
-                    ),
-                  ),
-                ),
-              ),
+                );
+              },
             );
           },
         );

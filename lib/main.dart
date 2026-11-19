@@ -29,7 +29,7 @@ Future<void> main() async {
     ));
     return;
   }
-  runApp(const AplLeagueApp());
+  runApp(const LeagueApp());
 }
 
 ThemeData _theme() {
@@ -100,13 +100,13 @@ ThemeData _theme() {
   );
 }
 
-class AplLeagueApp extends StatelessWidget {
-  const AplLeagueApp({super.key});
+class LeagueApp extends StatelessWidget {
+  const LeagueApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'APL League',
+      title: 'League Manager',
       debugShowCheckedModeBanner: false,
       theme: _theme(),
       builder: (context, child) {
@@ -129,7 +129,7 @@ class AplLeagueApp extends StatelessWidget {
                   height: 24,
                   child: Center(
                     child: Text(
-                      'Developed by Nikhil Bhandigare',
+                      'Developed by Jivan K',
                       style: TextStyle(
                         fontSize: 11,
                         letterSpacing: 0.3,
@@ -158,7 +158,7 @@ class AuthGate extends StatelessWidget {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: AplLoader());
+          return const Scaffold(body: LeagueLoader());
         }
         final user = snap.data;
         if (user == null) return const LoginScreen();
@@ -166,12 +166,12 @@ class AuthGate extends StatelessWidget {
           future: Db.profile(user.uid),
           builder: (context, p) {
             if (p.connectionState != ConnectionState.done) {
-              return const Scaffold(body: AplLoader());
+              return const Scaffold(body: LeagueLoader());
             }
             final profile = p.data;
             if (profile == null) {
               return Scaffold(
-                appBar: AppBar(title: const Text('APL League')),
+                appBar: AppBar(title: const Text('League Manager')),
                 body: Center(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
